@@ -1,12 +1,24 @@
 'use strict';
-const Database = require('better-sqlite3');
+// Node's built-in SQLite: nothing to compile, works on any Linux glibc. Needs Node >= 22.13.
+const { DatabaseSync } = require('node:sqlite');
 const crypto = require('crypto');
 const config = require('./config');
 
-const db = new Database(config.dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 5000');
+const db = new DatabaseSync(config.dbPath);
+db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+
+/** Run fn inside a transaction (rolled back if it throws). */
+function transaction(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS meta (
@@ -119,4 +131,4 @@ function setMeta(key, value) {
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-module.exports = { db, getMeta, setMeta, sha256 };
+module.exports = { db, transaction, getMeta, setMeta, sha256 };

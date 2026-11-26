@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const config = require('./config');
-const { db } = require('./db');
+const { db, transaction } = require('./db');
 const auth = require('./auth');
 const push = require('./push');
 const devices = require('./devices');
@@ -118,10 +118,10 @@ router.patch('/devices/:id', (req, res) => {
 
 // Removing a device deletes its stored track so a later owner never inherits it.
 function deleteDevice(d) {
-  db.transaction(() => {
+  transaction(() => {
     db.prepare('DELETE FROM positions WHERE imei = ?').run(d.serial);
     db.prepare('DELETE FROM devices WHERE id = ?').run(d.id); // cascades events/recharges
-  })();
+  });
 }
 
 router.delete('/devices/:id', (req, res) => {

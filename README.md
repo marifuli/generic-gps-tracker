@@ -28,8 +28,8 @@ option, keep it off / "DNS only".)
 
 ### 2. Server packages and firewall
 ```bash
-sudo apt update && sudo apt install -y nginx certbot python3-certbot-nginx ufw build-essential python3 curl
-# Node.js 22 (any version >= 20.12 works)
+sudo apt update && sudo apt install -y nginx certbot python3-certbot-nginx ufw curl
+# Node.js 22 or newer (>= 22.13 is required: the app uses Node's built-in SQLite)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
 
 sudo ufw allow OpenSSH
