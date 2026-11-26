@@ -33,6 +33,9 @@ const config = {
   vapidSubject: process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
   dbPath: path.resolve(root, process.env.DB_PATH || './gps.db'),
   retentionDays: int(process.env.RETENTION_DAYS, 0),
+  // Stop detection: staying put this long counts as a stop / a *long* stop
+  minStopMinutes: int(process.env.MIN_STOP_MINUTES, 5),
+  longStopMinutes: int(process.env.LONG_STOP_MINUTES, 60),
   sessionDays: 30,
 };
 

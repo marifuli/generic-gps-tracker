@@ -16,9 +16,7 @@ Environment=NODE_ENV=production
 
 # Hardening: the app only needs to write its own folder (SQLite db)
 NoNewPrivileges=true
-ProtectSystem=strict
 ReadWritePaths=/home/ariful/gps
-ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

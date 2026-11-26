@@ -34,20 +34,63 @@ function tzOffsetMs(instant, timeZone) {
   return asUtc - Math.floor(instant / 1000) * 1000;
 }
 
+/** UTC epoch ms of a wall-clock time in `timeZone`. */
+function localToUtcMs(y, m, d, hh, mm, timeZone) {
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  let t = guess - tzOffsetMs(guess, timeZone);
+  t = guess - tzOffsetMs(t, timeZone); // second pass handles DST edges
+  return t;
+}
+
 /** UTC ISO range [start, end) covering the local calendar day `YYYY-MM-DD` in `timeZone`. */
 function dayRange(date, timeZone) {
   const [y, m, d] = date.split('-').map(Number);
-  const localToUtc = (yy, mm, dd) => {
-    const guess = Date.UTC(yy, mm - 1, dd);
-    let t = guess - tzOffsetMs(guess, timeZone);
-    t = guess - tzOffsetMs(t, timeZone); // second pass handles DST edges
-    return t;
-  };
   const next = new Date(Date.UTC(y, m - 1, d + 1));
   return {
-    start: new Date(localToUtc(y, m, d)).toISOString(),
-    end: new Date(localToUtc(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate())).toISOString(),
+    start: new Date(localToUtcMs(y, m, d, 0, 0, timeZone)).toISOString(),
+    end: new Date(localToUtcMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, timeZone)).toISOString(),
   };
+}
+
+/** `YYYY-MM-DDTHH:mm` (wall-clock in `timeZone`) -> UTC ISO string, or null if invalid. */
+function localDateTimeToIso(value, timeZone) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value));
+  if (!m) return null;
+  const [y, mo, d, hh, mm] = m.slice(1).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mm > 59) return null;
+  const ms = localToUtcMs(y, mo, d, hh, mm, timeZone);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** Initial compass bearing (0-360, north = 0) from point a to point b. */
+function bearing(a, b) {
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude), lat2 = toRad(b.latitude);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/**
+ * Direction of travel derived from successive positions, for trackers that report no (or a
+ * constant) course. `st` is mutable per-device state: { ref, heading }.
+ * The reference point only advances once the vehicle has really moved, so GPS jitter while
+ * parked never spins the arrow and slow movement still accumulates into a direction.
+ */
+function nextHeading(st, latitude, longitude, speed, deviceCourse) {
+  const cur = { latitude, longitude };
+  if (!st.ref) {
+    st.ref = cur;
+    st.heading = Number.isFinite(deviceCourse) ? Math.round(deviceCourse) : 0;
+    return st.heading;
+  }
+  const needed = (speed || 0) >= 2 ? 8 : 25; // metres
+  if (haversineMeters(st.ref, cur) >= needed) {
+    st.heading = Math.round(bearing(st.ref, cur));
+    st.ref = cur;
+  }
+  return st.heading;
 }
 
 /** Today's date (YYYY-MM-DD) and hour in `timeZone`. */
@@ -74,5 +117,6 @@ function addDays(date, n) {
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 
 module.exports = {
-  normalizeSerial, validSerial, haversineMeters, dayRange, localNow, daysBetween, addDays, isDate,
+  normalizeSerial, validSerial, haversineMeters, dayRange, localDateTimeToIso, bearing, nextHeading,
+  localNow, daysBetween, addDays, isDate,
 };

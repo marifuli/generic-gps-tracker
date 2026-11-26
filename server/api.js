@@ -6,7 +6,9 @@ const auth = require('./auth');
 const push = require('./push');
 const devices = require('./devices');
 const recharge = require('./recharge');
-const { normalizeSerial, validSerial, haversineMeters, dayRange, localNow, isDate, addDays } = require('./util');
+const {
+  normalizeSerial, validSerial, haversineMeters, dayRange, localDateTimeToIso, nextHeading, localNow, isDate, addDays,
+} = require('./util');
 
 const router = express.Router();
 const { requireAuth, requireAdmin, httpError } = auth;
@@ -129,27 +131,51 @@ router.delete('/devices/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+const MAX_RANGE_MS = 31 * 86400000;
+const trips = require('./trips');
+
 router.get('/devices/:id/history', (req, res) => {
   const d = ownedDevice(req);
-  const date = isDate(req.query.date) ? req.query.date : localNow(config.timezone).date;
-  const { start, end } = dayRange(date, config.timezone);
+  let start, end, from, to;
+  if (req.query.from || req.query.to) {
+    // custom range: wall-clock times in the app timezone, `to` is inclusive of its minute
+    start = localDateTimeToIso(req.query.from, config.timezone);
+    const endMin = localDateTimeToIso(req.query.to, config.timezone);
+    if (!start || !endMin) throw httpError(400, 'Use from/to as YYYY-MM-DDTHH:mm');
+    end = new Date(Date.parse(endMin) + 60000).toISOString();
+    if (end <= start) throw httpError(400, 'The end time must be after the start time');
+    if (Date.parse(end) - Date.parse(start) > MAX_RANGE_MS) throw httpError(400, 'Choose a range of 31 days or less');
+    from = req.query.from; to = req.query.to;
+  } else {
+    const date = isDate(req.query.date) ? req.query.date : localNow(config.timezone).date;
+    ({ start, end } = dayRange(date, config.timezone));
+    from = `${date}T00:00`; to = `${date}T23:59`;
+  }
   const rows = db.prepare(`
-    SELECT time, latitude, longitude, speed, course, satellites FROM positions
+    SELECT time, latitude, longitude, speed, course, satellites, ignition FROM positions
     WHERE imei = ? AND time >= ? AND time < ? ORDER BY time ASC
   `).all(d.serial, start, end);
 
-  let distance = 0, maxSpeed = 0, moving = 0;
+  let distance = 0, maxSpeed = 0, moving = 0, ignitionOn = 0;
+  const hs = {};
   for (let i = 0; i < rows.length; i++) {
-    maxSpeed = Math.max(maxSpeed, rows[i].speed || 0);
+    const r = rows[i];
+    maxSpeed = Math.max(maxSpeed, r.speed || 0);
+    r.course = nextHeading(hs, r.latitude, r.longitude, r.speed, r.course); // direction even when the tracker sends none
     if (i === 0) continue;
-    const dt = (Date.parse(rows[i].time) - Date.parse(rows[i - 1].time)) / 1000;
-    const dist = haversineMeters(rows[i - 1], rows[i]);
-    // ignore GPS jitter while parked
-    if (dist > 15 || (rows[i].speed || 0) > 3) {
+    const prev = rows[i - 1];
+    const dt = (Date.parse(r.time) - Date.parse(prev.time)) / 1000;
+    const dist = haversineMeters(prev, r);
+    if (prev.ignition === 1 && dt > 0 && dt <= 300) ignitionOn += dt;
+    // ignore GPS jitter while parked, and unreported jumps across a long silence
+    if (dt <= trips.DEFAULTS.gapMin * 60 && (dist > 15 || (r.speed || 0) > 3)) {
       distance += dist;
       if (dt > 0 && dt <= 300) moving += dt;
     }
   }
+  const { timeline, stops } = trips.analyze(rows, {
+    minStopMin: config.minStopMinutes, longStopMin: config.longStopMinutes,
+  });
   const MAX_POINTS = 4000;
   let points = rows;
   if (rows.length > MAX_POINTS) {
@@ -163,14 +189,20 @@ router.get('/devices/:id/history', (req, res) => {
   `).all(d.id, start, end);
 
   res.json({
-    date,
+    from,
+    to,
     points,
     events,
+    timeline: timeline.map(({ firstIdx, lastIdx, ...t }) => t),
     stats: {
       pointCount: rows.length,
       distanceKm: Math.round(distance / 10) / 100,
       maxSpeed,
       movingMinutes: Math.round(moving / 60),
+      ignitionMinutes: Math.round(ignitionOn / 60),
+      stopCount: stops.length,
+      parkedMinutes: stops.reduce((a, s) => a + s.durationMin, 0),
+      longestStopMin: stops.reduce((a, s) => Math.max(a, s.durationMin), 0),
       start: rows[0]?.time ?? null,
       end: rows.at(-1)?.time ?? null,
     },

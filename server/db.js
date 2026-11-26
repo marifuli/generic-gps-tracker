@@ -118,7 +118,11 @@ db.exec(`
   );
 `);
 
-// Beta databases lack this index; it makes per-device history fast.
+// Columns/indexes added after the beta (safe to run on every start).
+if (!db.prepare('PRAGMA table_info(positions)').all().some((c) => c.name === 'ignition')) {
+  db.exec('ALTER TABLE positions ADD COLUMN ignition INTEGER'); // 1 on, 0 off, NULL unknown
+}
+// Per-device history lookups.
 db.exec('CREATE INDEX IF NOT EXISTS idx_positions_imei_time ON positions(imei, time)');
 
 /** Persistent secrets (session pepper is not needed: tokens are random). */

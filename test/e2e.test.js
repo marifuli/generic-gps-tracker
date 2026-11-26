@@ -54,9 +54,9 @@ function frame(proto, content, serial = 1) {
 }
 const login = (imei) => frame(0x01, Buffer.from(imei.padStart(16, '0'), 'hex'));
 const heartbeat = (acc) => frame(0x13, Buffer.from([acc ? 0x02 : 0x00, 5, 3, 0, 2]));
-function position(lat, lon, speed, course, acc) {
+function position(lat, lon, speed, course, acc, when = new Date()) {
   const c = Buffer.alloc(18);
-  const d = new Date();
+  const d = when;
   c.set([d.getUTCFullYear() - 2000, d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()], 0);
   c[6] = 0xc8; // gps info, 8 sats
   c.writeUInt32BE(Math.round(lat * 60 * 30000), 7);
@@ -177,6 +177,54 @@ test('tracker data: position, ignition events, notifications, websocket', async 
   assert.equal(pushed.length, 2);
   await call(alice, 'PATCH', `/api/devices/${deviceId}`, { notifyIgnition: true });
   ws.close();
+});
+
+test('history range filter, trips/stops, derived heading, buffered uploads', async () => {
+  const soon = (n) => new Date(Date.now() + n * 1000); // each live point must be newer than the last
+  const pushedBefore = pushed.length;
+  const before = (await call(alice, 'GET', '/api/devices')).body.devices[0];
+  assert.equal(before.ignition, true);
+
+  // Buffered upload from 2 days ago (tracker was offline): drive north, then park 40 min with ACC off
+  const day = util.localNow('Asia/Dhaka', new Date(Date.now() - 2 * 864e5)).date;
+  const noon = new Date(new Date(util.dayRange(day, 'Asia/Dhaka').start).getTime() + 12 * 3600e3);
+  const at = (min) => new Date(noon.getTime() + min * 60000);
+  for (let i = 0; i < 6; i++) tracker.write(position(23.70 + i * 0.002, 90.30, 30, 0, true, at(i)));
+  for (let i = 0; i <= 8; i++) tracker.write(position(23.71, 90.30, 0, 0, false, at(6 + i * 5)));
+  await until(async () => (await call(alice, 'GET', `/api/devices/${deviceId}/history?from=${day}T00:00&to=${day}T23:59`)).body.stats.pointCount >= 15);
+
+  const h = (await call(alice, 'GET', `/api/devices/${deviceId}/history?from=${day}T11:55&to=${day}T12:10`)).body;
+  assert.equal(h.stats.pointCount, 7, 'time filter returns only points inside the window (minutes 0-10)');
+  const full = (await call(alice, 'GET', `/api/devices/${deviceId}/history?from=${day}T00:00&to=${day}T23:59`)).body;
+  assert.deepEqual(full.timeline.map((x) => x.type), ['trip', 'stop']);
+  const stop = full.timeline[1];
+  assert.ok(stop.durationMin >= 35 && stop.idling === false, `stop ${stop.durationMin}min idling=${stop.idling}`);
+  assert.ok(full.stats.parkedMinutes >= 35 && full.stats.stopCount === 1);
+  assert.equal(full.points[0].ignition, 1);
+  assert.equal(full.points.at(-1).ignition, 0);
+  assert.ok(full.points.slice(1, 6).every((p) => p.course < 5 || p.course > 355), 'heading derived (north) although tracker sent course 0');
+
+  // old packets with ACC off must not flip the live state or notify
+  const after = (await call(alice, 'GET', '/api/devices')).body.devices[0];
+  assert.equal(after.ignition, true);
+  assert.equal(pushed.length, pushedBefore);
+
+  // live positions without course: heading follows the direction of travel
+  tracker.write(position(23.8130, 90.4130, 30, 0, true, soon(1)));
+  tracker.write(position(23.8150, 90.4130, 30, 0, true, soon(2))); // north
+  await until(async () => (await call(alice, 'GET', '/api/devices')).body.devices[0].position.latitude > 23.814);
+  let c = (await call(alice, 'GET', '/api/devices')).body.devices[0].position.course;
+  assert.ok(c < 5 || c > 355, `north heading was ${c}`);
+  tracker.write(position(23.8150, 90.4150, 30, 0, true, soon(3))); // east
+  await until(async () => (await call(alice, 'GET', '/api/devices')).body.devices[0].position.longitude > 90.414);
+  c = (await call(alice, 'GET', '/api/devices')).body.devices[0].position.course;
+  assert.ok(Math.abs(c - 90) < 5, `east heading was ${c}`);
+
+  // validation
+  assert.equal((await call(alice, 'GET', `/api/devices/${deviceId}/history?from=${day}T12:00&to=${day}T11:00`)).status, 400);
+  assert.equal((await call(alice, 'GET', `/api/devices/${deviceId}/history?from=2026-01-01T00:00&to=2026-03-01T00:00`)).status, 400);
+  assert.equal((await call(alice, 'GET', `/api/devices/${deviceId}/history?from=garbage&to=x`)).status, 400);
+  assert.equal((await call(bob, 'GET', `/api/devices/${deviceId}/history?from=${day}T00:00&to=${day}T23:59`)).status, 404);
 });
 
 test('data from unregistered devices is not stored', async () => {

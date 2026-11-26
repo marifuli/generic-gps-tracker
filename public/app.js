@@ -80,7 +80,7 @@
     Array.from({ length: max }, (_, i) => h('i', { class: i < level ? 'on' : '', style: `height:${5 + i * (9 / max)}px` })));
 
   /* ===================================================================== Google Maps */
-  const mapState = { ready: null, map: null, markers: new Map(), line: null, histMarkers: [], playMarker: null, lib: {}, geocoder: null, geoCache: new Map() };
+  const mapState = { ready: null, map: null, markers: new Map(), lines: [], histMarkers: [], playMarker: null, playStop: null, lib: {}, geocoder: null, geoCache: new Map() };
 
   function loadMaps() {
     if (mapState.ready) return mapState.ready;
@@ -114,20 +114,25 @@
   }
   function showMapMsg(msg) { const m = $('#mapMsg'); m.textContent = msg; m.classList.remove('hidden'); }
 
+  // Ignition colours: green = ignited, yellow = turned off, grey = unknown
+  const GREEN = '#1e8e3e', YELLOW = '#f9ab00';
   const ARROW = '<svg viewBox="0 0 24 24"><path d="M12 2 4.5 21l7.5-4.5 7.5 4.5z"/></svg>';
-  function pinContent(dev) {
+  function buildPin() {
     const el = h('div', { class: 'pin' }, h('div', { class: 'disc' }), h('div', { class: 'tag' }));
     el.firstChild.innerHTML = ARROW; // static trusted markup
-    stylePin(el, dev);
     return el;
   }
-  function stylePin(el, dev) {
-    el.classList.toggle('on', dev.ignition === true);
-    el.classList.toggle('offline', !dev.online);
-    el.querySelector('svg').style.transform = `rotate(${dev.position?.course || 0}deg)`;
-    el.querySelector('.tag').textContent = dev.name;
-    el.querySelector('.tag').style.display = state.devices.length > 1 ? '' : 'none';
+  function stylePin(el, { ignition, online = true, course = 0, label = '' }) {
+    el.classList.toggle('on', ignition === true);
+    el.classList.toggle('off', ignition === false);
+    el.classList.toggle('offline', !online);
+    el.querySelector('svg').style.transform = `rotate(${course || 0}deg)`;
+    const tag = el.querySelector('.tag');
+    tag.textContent = label;
+    tag.style.display = label ? '' : 'none';
   }
+  const devPin = (dev) => ({ ignition: dev.ignition, online: dev.online, course: dev.position?.course, label: state.devices.length > 1 ? dev.name : '' });
+  const pinFor = (dev) => { const el = buildPin(); stylePin(el, devPin(dev)); return el; };
 
   async function syncMarkers({ fit = false } = {}) {
     try { await loadMaps(); } catch { return; }
@@ -140,10 +145,10 @@
       if (!dev.position) { if (m) { m.map = null; mapState.markers.delete(dev.id); } continue; }
       const pos = { lat: dev.position.latitude, lng: dev.position.longitude };
       if (!m) {
-        m = new AdvancedMarkerElement({ position: pos, content: pinContent(dev), title: dev.name, zIndex: 10 });
+        m = new AdvancedMarkerElement({ position: pos, content: pinFor(dev), title: dev.name, zIndex: 10 });
         m.addListener('click', () => { state.selectedId = dev.id; state.follow = true; render(); });
         mapState.markers.set(dev.id, m);
-      } else { m.position = pos; stylePin(m.content, dev); }
+      } else { m.position = pos; stylePin(m.content, devPin(dev)); }
       m.map = live ? mapState.map : null;
       bounds.extend(pos); any = true;
     }
@@ -156,8 +161,10 @@
     }
   }
 
-  function clearHistoryLayer() {
-    mapState.line?.setMap(null); mapState.line = null;
+  // keepPlayback: redraw the route but leave the playback controls (already built) wired up
+  function clearHistoryLayer({ keepPlayback = false } = {}) {
+    if (!keepPlayback) { mapState.playStop?.(); mapState.playStop = null; mapState.playSeek = null; mapState.playUi = null; }
+    mapState.lines.forEach((l) => l.setMap(null)); mapState.lines = [];
     mapState.histMarkers.forEach((m) => { m.map = null; }); mapState.histMarkers = [];
     if (mapState.playMarker) { mapState.playMarker.map = null; mapState.playMarker = null; }
   }
@@ -210,7 +217,7 @@
     const p = dev.position;
 
     const ignBadge = dev.ignition === null ? h('span', { class: 'badge plain' }, 'Ignition unknown')
-      : h('span', { class: `badge ${dev.ignition ? 'ok' : ''}` }, dev.ignition ? 'Ignition ON' : 'Ignition OFF');
+      : h('span', { class: `badge ${dev.ignition ? 'ok' : 'warn'}` }, dev.ignition ? 'Ignition ON' : 'Ignition OFF');
     const onBadge = h('span', { class: `badge ${dev.online ? 'ok' : 'bad'}` }, dev.online ? 'Online' : 'Offline');
     const addr = h('span', { class: 'muted' }, p ? '…' : '—');
 
@@ -220,6 +227,9 @@
         h('div', { class: 'speed' }, p ? Math.round(p.speed || 0) : '—', ' ', h('small', null, 'km/h')),
         p ? h('div', { class: 'muted', style: 'text-align:right' }, `Heading ${compass(p.course)}`, h('br'), `${Math.round(p.course || 0)}°`) : null),
       h('dl', { class: 'kv' },
+        dev.ignition !== null ? [h('dt', null, 'Ignition'),
+          h('dd', { style: `color:${dev.ignition ? 'var(--ok)' : 'var(--warn)'};font-weight:600` },
+            dev.ignition ? 'ON' : 'OFF', dev.ignitionChangedAt ? h('span', { class: 'muted', style: 'font-weight:400' }, ` · since ${fmtDateTime(dev.ignitionChangedAt)}`) : null)] : null,
         h('dt', null, 'Last position'), h('dd', null, p ? agoEl(p.time) : 'No data yet'),
         h('dt', null, 'Last contact'), h('dd', null, agoEl(dev.lastSeen)),
         h('dt', null, 'Location'), h('dd', null, addr),
@@ -249,13 +259,34 @@
   }
 
   function eventItem(e) {
-    const kind = e.type === 'ignition_on' ? 'ok' : e.type.startsWith('alarm') ? 'bad' : '';
+    const kind = e.type === 'ignition_on' ? 'ok' : e.type === 'ignition_off' ? 'warn' : e.type.startsWith('alarm') ? 'bad' : '';
     return h('li', null, h('span', { class: `dot ${kind}` }),
       h('div', { class: 'grow' }, EVENT_LABEL[e.type] || e.message || e.type),
       h('div', { class: 'muted small' }, fmtDateTime(e.time)));
   }
 
   /* ---------------------------------------------------------------- history */
+  const ignOf = (p) => (p.ignition == null ? ((p.speed || 0) > 0 ? 1 : 0) : p.ignition);
+
+  function localDT(ms) { // 'YYYY-MM-DDTHH:mm' wall-clock in the app timezone
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz(), hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  }
+  const presets = () => {
+    const today = todayLocal(), y = shiftDay(today, -1), now = Date.now();
+    return [
+      ['Today', `${today}T00:00`, `${today}T23:59`],
+      ['Yesterday', `${y}T00:00`, `${y}T23:59`],
+      ['Last 3 h', localDT(now - 3 * 3600e3), localDT(now)],
+      ['Last 24 h', localDT(now - 24 * 3600e3), localDT(now)],
+      ['7 days', `${shiftDay(today, -6)}T00:00`, `${today}T23:59`],
+    ];
+  };
+  const fmtRange = (f, t) => (f.slice(0, 10) === t.slice(0, 10) ? `${fmtDay(f.slice(0, 10))}, ${f.slice(11)}–${t.slice(11)}` : `${fmtDay(f.slice(0, 10))} ${f.slice(11)} → ${fmtDay(t.slice(0, 10))} ${t.slice(11)}`);
+  const minsText = (m) => (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`);
+
   async function viewHistory() {
     const root = panel();
     root.replaceChildren();
@@ -263,80 +294,182 @@
     if (!state.devices.length) { put(root, emptyDevices()); return; }
     const dev = selected();
     state.selectedId = dev.id;
-    const date = state.params.get('date') || state.historyDate || todayLocal();
-    state.historyDate = date;
+    if (!state.hFrom) { const t = todayLocal(); state.hFrom = `${t}T00:00`; state.hTo = `${t}T23:59`; }
+    const { hFrom, hTo } = state;
 
-    const go = (d) => { state.historyDate = d; state.params.set('date', d); viewHistory(); };
-    const dateInput = h('input', { type: 'date', value: date, max: todayLocal(), 'aria-label': 'Date', onchange: (e) => e.target.value && go(e.target.value) });
+    const apply = (f, t) => {
+      if (!f || !t) return toast('Choose both a start and an end time', 'error');
+      if (t <= f) return toast('The end time must be after the start time', 'error');
+      state.hFrom = f; state.hTo = t; viewHistory();
+    };
+    const shift = (n) => apply(shiftDay(hFrom.slice(0, 10), n) + hFrom.slice(10), shiftDay(hTo.slice(0, 10), n) + hTo.slice(10));
+    const fromIn = h('input', { type: 'datetime-local', value: hFrom, step: 60, 'aria-label': 'From' });
+    const toIn = h('input', { type: 'datetime-local', value: hTo, step: 60, 'aria-label': 'To' });
     const body = h('div', null, h('div', { class: 'center-screen', style: 'min-height:120px' }, h('div', { class: 'spinner' })));
+
     put(root, deviceChips(render),
-      h('div', { class: 'card row' },
-        h('button', { class: 'btn', 'aria-label': 'Previous day', onclick: () => go(shiftDay(date, -1)) }, '‹'),
-        h('div', { class: 'grow' }, dateInput),
-        h('button', { class: 'btn', 'aria-label': 'Next day', disabled: date >= todayLocal(), onclick: () => go(shiftDay(date, 1)) }, '›')),
+      h('div', { class: 'card stack' },
+        h('div', { class: 'chips', style: 'padding:0;flex-wrap:wrap' }, presets().map(([label, f, t]) =>
+          h('button', { class: `chip ${f === hFrom && t === hTo ? 'active' : ''}`, onclick: () => apply(f, t) }, label))),
+        h('div', { class: 'grid2 narrow' }, h('label', { class: 'field' }, 'From', fromIn), h('label', { class: 'field' }, 'To', toIn)),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', 'aria-label': 'Previous day', onclick: () => shift(-1) }, '‹'),
+          h('button', { class: 'btn primary grow', onclick: () => apply(fromIn.value, toIn.value) }, 'Show route'),
+          h('button', { class: 'btn', 'aria-label': 'Next day', onclick: () => shift(1) }, '›'))),
       body);
 
     let data;
-    try { data = await api('GET', `/api/devices/${dev.id}/history?date=${date}`); }
+    const q = `from=${encodeURIComponent(hFrom)}&to=${encodeURIComponent(hTo)}`;
+    try { data = await api('GET', `/api/devices/${dev.id}/history?${q}`); }
     catch (e) { body.replaceChildren(h('p', { class: 'error' }, e.message)); return; }
-    if (state.view !== 'history' || state.historyDate !== date || selected()?.id !== dev.id) return;
+    if (state.view !== 'history' || state.hFrom !== hFrom || state.hTo !== hTo || selected()?.id !== dev.id) return;
 
     const s = data.stats;
-    const hh = Math.floor(s.movingMinutes / 60), mm = s.movingMinutes % 60;
+    const label = fmtRange(hFrom, hTo);
     body.replaceChildren(
-      h('div', { class: 'card' }, h('div', { class: 'stats' },
+      h('div', { class: 'card' }, h('h3', null, label), h('div', { class: 'stats' },
         stat(`${s.distanceKm} km`, 'Distance'), stat(`${Math.round(s.maxSpeed)} km/h`, 'Top speed'),
-        stat(hh ? `${hh}h ${mm}m` : `${mm} min`, 'Moving time'), stat(s.pointCount, 'GPS points'))),
-      s.pointCount ? playback(data) : h('div', { class: 'card empty' }, h('p', null, `No GPS data on ${fmtDay(date)}.`)),
+        stat(minsText(s.movingMinutes), 'Moving time'), stat(minsText(s.ignitionMinutes), 'Ignition on'),
+        stat(s.stopCount, 'Stops'), stat(s.longestStopMin ? minsText(s.longestStopMin) : '—', 'Longest stop')),
+        h('div', { class: 'legend' }, h('span', null, h('i', { style: `background:${GREEN}` }), 'Ignition on'), h('span', null, h('i', { style: `background:${YELLOW}` }), 'Ignition off'))),
+      s.pointCount ? playback(data) : h('div', { class: 'card empty' }, h('p', null, 'No GPS data in this time range.')),
+      timelineCard(data),
       h('div', { class: 'card flush' }, h('div', { style: 'padding:14px 16px 4px' }, h('h3', null, 'Events')),
         data.events.length ? h('ul', { class: 'list' }, data.events.map(eventItem))
-          : h('p', { class: 'muted small', style: 'padding:0 16px 16px' }, 'No ignition or alarm events this day.')));
+          : h('p', { class: 'muted small', style: 'padding:0 16px 16px' }, 'No ignition or alarm events in this range.')));
 
     drawRoute(data);
   }
   const stat = (v, l) => h('div', { class: 'stat' }, h('b', null, v), h('span', null, l));
 
+  /* Trips & stops: auto-detected by the server (movement vs. staying in one place) */
+  function timelineCard(data) {
+    if (!data.timeline.length) return null;
+    const range = (a, b) => `${fmtTime(a).replace(/:\d\d /, ' ')} → ${fmtTime(b).replace(/:\d\d /, ' ')}`;
+    const focus = (item) => {
+      if (!mapState.map) return;
+      mapState.playSeek?.(item.start);
+      if (item.type === 'stop') { mapState.map.panTo({ lat: item.latitude, lng: item.longitude }); mapState.map.setZoom(Math.max(mapState.map.getZoom(), 17)); }
+    };
+    const rows = data.timeline.map((it) => {
+      let dot, title, sub, badge = null;
+      if (it.type === 'trip') {
+        dot = 'ok'; title = `Trip · ${it.distanceKm} km`; sub = `${minsText(it.durationMin)} · max ${Math.round(it.maxSpeed)} km/h`;
+      } else if (it.type === 'stop') {
+        dot = it.idling ? 'ok' : 'warn'; title = `${it.idling ? 'Idling' : 'Parked'} · ${minsText(it.durationMin)}`; sub = 'Tap to show on map';
+        if (it.long) badge = h('span', { class: 'badge warn plain' }, 'Long stop');
+      } else { dot = 'off'; title = `No signal · ${minsText(it.durationMin)}`; sub = `Moved ${it.distanceKm} km unreported`; }
+      const li = h('li', { class: it.type === 'gap' ? '' : 'tap', tabindex: it.type === 'gap' ? null : 0, onclick: () => it.type !== 'gap' && focus(it),
+        onkeydown: (e) => { if (e.key === 'Enter' && it.type !== 'gap') focus(it); } },
+      h('span', { class: `dot ${dot}` }),
+      h('div', { class: 'grow' }, h('div', null, title, ' ', badge), h('div', { class: 'muted small' }, range(it.start, it.end), ' · ', sub)));
+      return li;
+    });
+    return h('div', { class: 'card flush' }, h('div', { style: 'padding:14px 16px 4px' }, h('h3', null, 'Trips & stops')), h('ul', { class: 'list' }, rows));
+  }
+
   function playback(data) {
     const pts = data.points;
-    const info = h('div', { class: 'row between small' }, h('span', null, fmtTime(pts[0].time)), h('span', { class: 'muted' }, ''));
-    const slider = h('input', {
-      type: 'range', min: 0, max: pts.length - 1, step: 1, value: pts.length - 1, 'aria-label': 'Scrub through the route',
-      oninput: (e) => movePlay(pts[+e.target.value], info),
-    });
-    state.playInfo = info;
-    return h('div', { class: 'card' }, h('h3', null, 'Route playback'), slider, info);
+    let idx = pts.length - 1, timer = null, mult = 4;
+    const ui = { time: h('b', null, fmtTime(pts[idx].time)), meta: h('span', { class: 'muted' }), badge: h('span', { class: 'badge' }) };
+    const slider = h('input', { type: 'range', min: 0, max: pts.length - 1, step: 1, value: idx, 'aria-label': 'Scrub through the route', oninput: (e) => set(+e.target.value) });
+    showPlayInfo(pts[idx], ui);
+    const playBtn = h('button', { class: 'btn primary sm' }, '▶ Play');
+    const set = (i) => { idx = i; slider.value = i; movePlay(pts[i], ui); };
+    const stop = () => { clearInterval(timer); timer = null; playBtn.textContent = '▶ Play'; };
+    const run = () => {
+      clearInterval(timer);
+      const inc = Math.max(1, Math.round((pts.length * mult) / 600)); // whole route in ~60s at 1x
+      timer = setInterval(() => { if (idx >= pts.length - 1) return stop(); set(Math.min(idx + inc, pts.length - 1)); }, 100);
+      playBtn.textContent = '⏸ Pause';
+    };
+    playBtn.addEventListener('click', () => { if (timer) return stop(); if (idx >= pts.length - 1) set(0); run(); });
+    mapState.playStop = stop;
+    const speeds = h('div', { class: 'row', style: 'gap:6px' }, [1, 4, 16].map((m) => {
+      const b = h('button', { class: `chip ${m === mult ? 'active' : ''}`, style: 'padding:3px 10px', onclick: () => {
+        mult = m; speeds.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === b)); if (timer) run();
+      } }, `${m}×`);
+      return b;
+    }));
+    mapState.playUi = ui;
+    mapState.playSeek = (iso) => { // jump playback to the point nearest a timestamp
+      const t = Date.parse(iso);
+      let best = 0;
+      for (let i = 0; i < pts.length; i++) if (Math.abs(Date.parse(pts[i].time) - t) < Math.abs(Date.parse(pts[best].time) - t)) best = i;
+      stop(); set(best);
+    };
+    return h('div', { class: 'card stack' }, h('div', { class: 'row between' }, h('h3', { style: 'margin:0' }, 'Route playback'), speeds),
+      slider,
+      h('div', { class: 'row between small' }, ui.time, ui.badge, ui.meta),
+      h('div', { class: 'row' }, playBtn, h('span', { class: 'muted small' }, 'Arrow shows the direction of travel')));
   }
-  async function movePlay(pt, info) {
-    info.firstChild.textContent = fmtTime(pt.time);
-    info.lastChild.textContent = `${Math.round(pt.speed || 0)} km/h`;
+
+  function showPlayInfo(pt, ui) {
+    const on = ignOf(pt) === 1;
+    ui.time.textContent = fmtTime(pt.time);
+    ui.badge.className = `badge ${on ? 'ok' : 'warn'}`;
+    ui.badge.textContent = on ? 'Ignition on' : 'Ignition off';
+    ui.meta.textContent = `${Math.round(pt.speed || 0)} km/h · ${compass(pt.course)}`;
+    return on;
+  }
+
+  async function movePlay(pt, ui) {
+    const on = showPlayInfo(pt, ui);
     try { await loadMaps(); } catch { return; }
     const pos = { lat: pt.latitude, lng: pt.longitude };
     if (!mapState.playMarker) {
-      mapState.playMarker = new mapState.lib.AdvancedMarkerElement({ map: mapState.map, position: pos, content: h('div', { class: 'dotmark' }), zIndex: 20 });
+      mapState.playMarker = new mapState.lib.AdvancedMarkerElement({ map: mapState.map, position: pos, content: buildPin(), zIndex: 20 });
     } else mapState.playMarker.position = pos;
+    stylePin(mapState.playMarker.content, { ignition: on, course: pt.course });
     if (!mapState.map.getBounds()?.contains(pos)) mapState.map.panTo(pos);
   }
 
   async function drawRoute(data) {
     try { await loadMaps(); } catch { return; }
     if (state.view !== 'history') return;
-    clearHistoryLayer();
-    if (!data.points.length) return;
-    const path = data.points.map((p) => ({ lat: p.latitude, lng: p.longitude }));
-    mapState.line = new google.maps.Polyline({ path, strokeColor: '#1a73e8', strokeOpacity: 0.9, strokeWeight: 5, map: mapState.map });
+    clearHistoryLayer({ keepPlayback: true });
+    const pts = data.points;
+    if (!pts.length) return;
+    const ll = (p) => ({ lat: p.latitude, lng: p.longitude });
+
+    // One polyline per ignition state; a long silence (>15 min) breaks the line instead of drawing a jump.
+    const segs = [];
+    let cur = { ign: ignOf(pts[0]), path: [ll(pts[0])] };
+    for (let i = 1; i < pts.length; i++) {
+      const g = ignOf(pts[i]);
+      const gap = Date.parse(pts[i].time) - Date.parse(pts[i - 1].time) > 15 * 60000;
+      if (gap) { segs.push(cur); cur = { ign: g, path: [ll(pts[i])] }; }
+      else if (g !== cur.ign) { cur.path.push(ll(pts[i])); segs.push(cur); cur = { ign: g, path: [ll(pts[i])] }; }
+      else cur.path.push(ll(pts[i]));
+    }
+    segs.push(cur);
+    const arrow = { path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, scale: 2.4, strokeColor: '#1d2433', strokeWeight: 1, fillColor: '#fff', fillOpacity: 1 };
+    for (const sg of segs) {
+      if (sg.path.length < 2) continue;
+      mapState.lines.push(new google.maps.Polyline({
+        path: sg.path, map: mapState.map, strokeColor: sg.ign ? GREEN : YELLOW, strokeOpacity: 0.95, strokeWeight: 6,
+        icons: [{ icon: arrow, offset: '30px', repeat: '110px' }], // direction-of-travel arrows
+      }));
+    }
+
     const { AdvancedMarkerElement } = mapState.lib;
-    mapState.histMarkers.push(
-      new AdvancedMarkerElement({ map: mapState.map, position: path[0], content: h('div', { class: 'dotmark start' }), title: 'Start' }),
-      new AdvancedMarkerElement({ map: mapState.map, position: path.at(-1), content: h('div', { class: 'dotmark end' }), title: 'End' }));
+    const add = (m) => mapState.histMarkers.push(new AdvancedMarkerElement({ map: mapState.map, ...m }));
+    add({ position: ll(pts[0]), content: h('div', { class: 'dotmark start' }), title: 'Start' });
+    add({ position: ll(pts.at(-1)), content: h('div', { class: 'dotmark end' }), title: 'End' });
     for (const e of data.events) {
       if (e.latitude == null) continue;
-      const c = h('div', { class: 'dotmark', style: `background:${e.type === 'ignition_on' ? '#188038' : e.type === 'ignition_off' ? '#5f6368' : '#d93025'};width:12px;height:12px` });
-      mapState.histMarkers.push(new AdvancedMarkerElement({ map: mapState.map, position: { lat: e.latitude, lng: e.longitude }, content: c, title: `${EVENT_LABEL[e.type] || e.message} ${fmtTime(e.time)}` }));
+      const color = e.type === 'ignition_on' ? GREEN : e.type === 'ignition_off' ? YELLOW : '#d93025';
+      add({ position: { lat: e.latitude, lng: e.longitude }, content: h('div', { class: 'dotmark', style: `background:${color};width:12px;height:12px` }), title: `${EVENT_LABEL[e.type] || e.message} ${fmtTime(e.time)}` });
+    }
+    for (const it of data.timeline) {
+      if (it.type !== 'stop') continue;
+      const c = h('div', { class: `stopmark ${it.idling ? 'idle' : ''}` }, minsText(it.durationMin));
+      add({ position: { lat: it.latitude, lng: it.longitude }, content: c, title: `${it.idling ? 'Idling' : 'Parked'} ${minsText(it.durationMin)}`, zIndex: 5 });
     }
     const b = new google.maps.LatLngBounds();
-    path.forEach((p) => b.extend(p));
+    pts.forEach((p) => b.extend(ll(p)));
     mapState.map.fitBounds(b, 50);
-    if (state.playInfo) movePlay(data.points.at(-1), state.playInfo);
+    if (mapState.playUi) movePlay(pts.at(-1), mapState.playUi);
   }
 
   /* ---------------------------------------------------------------- recharge */
@@ -653,7 +786,7 @@
         if (liveVisible) viewLive();
         break;
       case 'ignition':
-        dev.ignition = m.ignition;
+        dev.ignition = m.ignition; dev.ignitionChangedAt = m.time;
         toast(`${dev.name} ${m.ignition ? 'started' : 'turned off'}`, m.ignition ? 'ok' : '');
         syncMarkers();
         if (state.view === 'live') viewLive();

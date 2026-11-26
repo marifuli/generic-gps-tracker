@@ -5,6 +5,10 @@ Self-hosted, multi-user GPS tracker for GT06-protocol devices (Concox GT06/GK309
 - **Google Maps** live view, follow mode, address lookup, route history with playback
 - **Google sign-in**; each device is claimed by serial/IMEI, and an account only ever sees its own devices
 - **Push notifications** (Web Push / VAPID, no Firebase needed) when the bike starts / stops, on alarms, and before the SIM expires
+- **Ignition colours** everywhere: **green** = ignited, **yellow** = turned off, grey = unknown
+- **History** with a date-and-time filter (presets, custom from/to up to 31 days), route coloured by ignition state, direction arrows and playback (1x/4x/16x)
+- **Direction of travel** derived from movement, so it works even when the tracker sends no course
+- **Trips & stops** detected automatically: parked or idling stays, long stops (default 60+ min), trips between them and "no signal" gaps
 - **SIM recharge management**: amounts, dates, expiry, stacking packs, spend totals, reminder days
 - Mobile-first PWA (installable), light/dark, real-time over WebSocket
 - Runs as one Node process + SQLite behind nginx on your VPS
@@ -119,6 +123,17 @@ Access control: `ADMIN_EMAILS` can list all devices and release a serial claimed
 ```bash
 npm install && cp .env.example .env && npm start     # http://127.0.0.1:8080
 ```
+
+## Demo with the simulator
+```bash
+node scripts/simulate-tracker.js --serial 865784053274570 --host track.example.com --port 8090 --backfill 3
+```
+Register the serial in the app first. It sends the ignition signal (OFF then ON, OFF again on Ctrl+C), moves with no course data,
+and `--backfill 3` first uploads 3 past days of trips, a long parked stop, an idling stop and a signal gap.
+`--ignition toggle` flips ignition regularly (fires the push notifications), `--ignition off` stays parked.
+
+Tuning: `MIN_STOP_MINUTES` (default 5) and `LONG_STOP_MINUTES` (default 60) in `.env`.
+Only packets stamped within the last 10 minutes change the live state; buffered uploads from a tracker that was offline go into history only.
 
 ## Notes
 - Other protocols: set `GPS_PROTOCOL` to TK103, TK510, GT02A, ST901 or H02. Position tracking works for all; ignition/battery parsing is GT06-specific (H02 ignition is parsed where the device reports it).

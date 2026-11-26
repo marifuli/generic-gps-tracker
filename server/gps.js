@@ -5,7 +5,7 @@ const { db } = require('./db');
 const push = require('./push');
 const realtime = require('./realtime');
 const devices = require('./devices');
-const { normalizeSerial } = require('./util');
+const { normalizeSerial, nextHeading } = require('./util');
 
 /**
  * GT06 variant: many Concox-compatible trackers report position with protocol 0x22,
@@ -45,8 +45,10 @@ const Adapter = config.gpsProtocol === 'GT06' ? Gt06Plus : adapters[config.gpsPr
 if (!Adapter) throw new Error(`Unknown GPS_PROTOCOL "${config.gpsProtocol}". Options: ${Object.keys(adapters).join(', ')}`);
 
 const insertPosition = db.prepare(
-  'INSERT INTO positions (imei, time, latitude, longitude, speed, course, satellites) VALUES (?,?,?,?,?,?,?)',
+  'INSERT INTO positions (imei, time, latitude, longitude, speed, course, satellites, ignition) VALUES (?,?,?,?,?,?,?,?)',
 );
+const newestPosition = db.prepare('SELECT latitude, longitude, course FROM positions WHERE imei = ? ORDER BY time DESC LIMIT 1');
+const headings = new Map(); // serial -> { ref, heading } for direction-of-travel detection
 const latestTime = db.prepare('SELECT MAX(time) AS t FROM positions WHERE imei = ?');
 const touch = db.prepare('UPDATE devices SET last_seen = ? WHERE id = ?');
 const insertEvent = db.prepare(
@@ -140,15 +142,37 @@ function start() {
         speed: p.speed ?? 0, course: p.orientation ?? 0, satellites: p.satellites ?? null,
       };
       const newest = latestTime.get(serial).t;
-      insertPosition.run(serial, iso, lat, lon, data.speed, data.course, data.satellites);
-      touch.run(new Date(now).toISOString(), row.id);
+      // Devices upload buffered history after reconnecting: only the newest point is "live".
+      const isNewest = !newest || iso >= newest;
+      // Only a packet stamped within the last few minutes describes the vehicle *now*. Buffered
+      // uploads (tracker was offline) must not flip the live ignition state or fire alerts.
+      const isLive = isNewest && now - t < 10 * 60000;
 
-      // Devices upload buffered history after reconnecting; only the newest point is "live".
-      if (!newest || iso >= newest) {
+      let ign = typeof p.extra?.ignition === 'boolean' ? p.extra.ignition : null;
+      if (isNewest) {
         lastPosition.set(serial, { latitude: lat, longitude: lon });
-        realtime.publish(row.user_id, { type: 'position', deviceId: row.id, data });
+        if (isLive && ign !== null) handleIgnition(serial, ign, new Date(now).toISOString());
       }
-      if (typeof p.extra?.ignition === 'boolean') handleIgnition(serial, p.extra.ignition, new Date(now).toISOString());
+      const fresh = devices.bySerial.get(serial) || row;
+      const ignValue = ign !== null ? (ign ? 1 : 0) : (isLive ? fresh.ignition : null); // null = unknown
+
+      // Direction of travel: trackers often send no usable course, so derive it from movement.
+      let heading = p.orientation ?? 0;
+      if (isNewest) {
+        let st = headings.get(serial);
+        if (!st) {
+          const prev = newestPosition.get(serial);
+          st = prev ? { ref: { latitude: prev.latitude, longitude: prev.longitude }, heading: Math.round(prev.course || 0) } : {};
+          headings.set(serial, st);
+        }
+        heading = nextHeading(st, lat, lon, data.speed, p.orientation);
+      }
+      data.course = heading;
+      data.ignition = ignValue === null || ignValue === undefined ? null : !!ignValue;
+
+      insertPosition.run(serial, iso, lat, lon, data.speed, heading, data.satellites, ignValue ?? null);
+      touch.run(new Date(now).toISOString(), row.id);
+      if (isLive) realtime.publish(row.user_id, { type: 'position', deviceId: row.id, data });
     });
 
     device.on('packet', (packet) => {
