@@ -1,0 +1,29 @@
+# /etc/systemd/system/gps-tracker.service
+[Unit]
+Description=GPS Tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gps
+Group=gps
+WorkingDirectory=/opt/gps-tracker
+ExecStart=/home/kajuzi/.nvm/versions/node/v24.21.0/bin/node server/index.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+# Hardening: the app only needs to write its own folder (SQLite db)
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/gps-tracker
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

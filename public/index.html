@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a73e8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GPS Tracker">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>GPS Tracker</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="boot" class="center-screen"><div class="spinner"></div></div>
+
+  <div id="login" class="center-screen hidden">
+    <div class="login-card">
+      <img src="/icons/icon-192.png" alt="" width="72" height="72" class="logo">
+      <h1>GPS Tracker</h1>
+      <p class="muted">Live location, ride history, ignition alerts and SIM recharge reminders for your vehicle.</p>
+      <div id="gbtn"></div>
+      <p id="loginErr" class="error"></p>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <nav id="nav" aria-label="Main">
+      <div class="brand"><img src="/icons/icon-192.png" alt="" width="28" height="28"><span>GPS Tracker</span></div>
+      <a href="#/live" data-view="live"><svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg><span>Live</span></a>
+      <a href="#/history" data-view="history"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.25 2.52.75-1.23-3.5-2.08V8z"/></svg><span>History</span></a>
+      <a href="#/recharge" data-view="recharge"><svg viewBox="0 0 24 24"><path d="M16 1H8a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm-3 16h-2v-3H8l4-7v4h2z"/></svg><span>Recharge</span></a>
+      <a href="#/settings" data-view="settings"><svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.9a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.9a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/></svg><span>Settings</span></a>
+    </nav>
+    <main id="main">
+      <section id="mapPane">
+        <div id="map"></div>
+        <div id="mapMsg" class="map-msg hidden"></div>
+      </section>
+      <section id="panel" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <div id="toasts" aria-live="assertive"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

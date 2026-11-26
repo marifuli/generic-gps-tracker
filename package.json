@@ -1,0 +1,22 @@
+{
+  "name": "gps-tracker",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Self-hosted multi-user GPS tracker (GT06) with Google Maps, Google login, push notifications and SIM recharge management",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.3.0",
+    "google-auth-library": "^11.3.4",
+    "gps-tracking": "^2.0.0-beta.1",
+    "web-push": "^4.0.0",
+    "ws": "^8.21.3"
+  }
+}

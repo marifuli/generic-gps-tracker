@@ -1,0 +1,554 @@
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>GPS Tracker</title>
+
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+        }
+
+        header {
+            height: 60px;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            background: white;
+            border-bottom: 1px solid #ddd;
+        }
+
+        #status {
+            margin-left: 15px;
+            font-size: 14px;
+        }
+
+        #map {
+            height: 500px;
+            width: 100%;
+        }
+
+        .info {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1px;
+            background: #ddd;
+        }
+
+        .card {
+            background: white;
+            padding: 18px;
+        }
+
+        .label {
+            color: #777;
+            font-size: 13px;
+        }
+
+        .value {
+            font-size: 20px;
+            margin-top: 5px;
+        }
+
+        #history {
+            background: white;
+            padding: 15px 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            border-top: 1px solid #ddd;
+        }
+
+        #history input {
+            padding: 7px 10px;
+            font-size: 14px;
+        }
+
+        button {
+            padding: 8px 14px;
+            border: 1px solid #ccc;
+            background: white;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background: #f0f0f0;
+        }
+
+        #message {
+            color: #777;
+            font-size: 14px;
+        }
+
+        .tracker-marker {
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 30px;
+            transform-origin: center center;
+        }
+
+        @media (max-width: 700px) {
+            .info {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            #map {
+                height: 400px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <strong>GPS Tracker</strong>
+    <span id="status">Connecting...</span>
+</header>
+
+<div id="map"></div>
+
+<div class="info">
+
+    <div class="card">
+        <div class="label">Speed</div>
+        <div class="value" id="speed">—</div>
+    </div>
+
+    <div class="card">
+        <div class="label">Satellites</div>
+        <div class="value" id="satellites">—</div>
+    </div>
+
+    <div class="card">
+        <div class="label">Latitude</div>
+        <div class="value" id="latitude">—</div>
+    </div>
+
+    <div class="card">
+        <div class="label">Longitude</div>
+        <div class="value" id="longitude">—</div>
+    </div>
+
+</div>
+
+<div id="history">
+
+    <strong>History:</strong>
+
+    <input
+        type="date"
+        id="date"
+    >
+
+    <button id="showHistory">
+        Show
+    </button>
+
+    <button id="liveButton">
+        LIVE
+    </button>
+
+    <span id="message"></span>
+
+</div>
+
+<div style="background:white; padding:15px 20px;">
+    <strong>Last update:</strong>
+    <span id="time">—</span>
+</div>
+
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+
+    /*
+     * MAP
+     */
+
+    const map = L.map('map');
+
+    L.tileLayer(
+        'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+        }
+    ).addTo(map);
+
+    // Initial map position
+    map.setView([23.8103, 90.4125], 13);
+
+
+    /*
+     * TRACKER MARKER
+     */
+
+    const trackerIcon = L.divIcon({
+        className: '',
+        html: '<div class="tracker-marker">🟢</div>',
+        iconSize: [36, 36],
+        iconAnchor: [18, 18]
+    });
+
+    let marker = null;
+
+    let routeLine = null;
+
+    let liveMode = true;
+
+
+    /*
+     * DATE
+     */
+
+    function getDhakaDate() {
+
+        return new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Dhaka',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).format(new Date());
+
+    }
+
+    document.getElementById('date').value =
+        getDhakaDate();
+
+
+    /*
+     * TIME
+     */
+
+    function formatDhakaTime(isoTime) {
+
+        return new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Dhaka',
+
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit',
+
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+
+            hour12: true
+        }).format(new Date(isoTime));
+
+    }
+
+
+    /*
+     * UPDATE INFORMATION
+     */
+
+    function updateInfo(data) {
+
+        if (!data) return;
+
+        document.getElementById('speed').textContent =
+            `${data.speed ?? 0} km/h`;
+
+        document.getElementById('satellites').textContent =
+            data.satellites ?? '—';
+
+        document.getElementById('latitude').textContent =
+            Number(data.latitude).toFixed(7);
+
+        document.getElementById('longitude').textContent =
+            Number(data.longitude).toFixed(7);
+
+        document.getElementById('time').textContent =
+            formatDhakaTime(data.time);
+    }
+
+
+    /*
+     * UPDATE LIVE MARKER
+     */
+
+    function updateMarker(data, center = false) {
+
+        if (!data) return;
+
+        const lat = Number(data.latitude);
+        const lon = Number(data.longitude);
+
+        const position = [lat, lon];
+
+        if (!marker) {
+
+            marker = L.marker(
+                position,
+                {
+                    icon: trackerIcon
+                }
+            ).addTo(map);
+
+        } else {
+
+            marker.setLatLng(position);
+
+        }
+
+        /*
+         * Rotate the car according to course.
+         */
+
+        const markerElement =
+            marker.getElement();
+
+        if (markerElement) {
+
+            const car =
+                markerElement.querySelector(
+                    '.tracker-marker'
+                );
+
+            if (car) {
+
+                car.style.transform =
+                    `rotate(${Number(data.course || 0)}deg)`;
+
+            }
+
+        }
+
+        marker.bindPopup(`
+            <strong>GPS Tracker</strong><br>
+            Speed: ${data.speed ?? 0} km/h<br>
+            Satellites: ${data.satellites ?? '—'}<br>
+            ${formatDhakaTime(data.time)}
+        `);
+
+        if (center) {
+
+            map.setView(
+                position,
+                Math.max(map.getZoom(), 16)
+            );
+
+        }
+    }
+
+
+    /*
+     * DRAW HISTORY
+     */
+
+    function showHistory(rows) {
+
+        if (routeLine) {
+
+            map.removeLayer(routeLine);
+            routeLine = null;
+
+        }
+
+        if (!rows || rows.length === 0) {
+
+            document.getElementById('message').textContent =
+                'No GPS data for this date.';
+
+            return;
+
+        }
+
+        const points = rows.map(row => [
+            Number(row.latitude),
+            Number(row.longitude)
+        ]);
+
+        routeLine = L.polyline(
+            points,
+            {
+                weight: 4
+            }
+        ).addTo(map);
+
+        map.fitBounds(
+            routeLine.getBounds(),
+            {
+                padding: [30, 30]
+            }
+        );
+
+        /*
+         * Put the marker at the last point of the
+         * selected historical route.
+         */
+
+        const last = rows[rows.length - 1];
+
+        updateInfo(last);
+        updateMarker(last);
+
+        document.getElementById('message').textContent =
+            `${rows.length} GPS points`;
+    }
+
+
+    /*
+     * WEBSOCKET
+     */
+
+    const protocol =
+        location.protocol === 'https:'
+            ? 'wss:'
+            : 'ws:';
+
+    const socket = new WebSocket(
+        `${protocol}//${location.host}`
+    );
+
+
+    socket.onopen = () => {
+
+        document.getElementById('status').textContent =
+            '● LIVE';
+
+    };
+
+
+    socket.onclose = () => {
+
+        document.getElementById('status').textContent =
+            '● Disconnected';
+
+    };
+
+
+    socket.onerror = () => {
+
+        document.getElementById('status').textContent =
+            '● Connection error';
+
+    };
+
+
+    socket.onmessage = event => {
+
+        const message =
+            JSON.parse(event.data);
+
+        /*
+         * Live GPS position
+         */
+
+        if (message.type === 'position') {
+
+            updateInfo(message.data);
+
+            /*
+             * Only move the map automatically when
+             * we're in LIVE mode.
+             */
+
+            if (liveMode) {
+
+                updateMarker(
+                    message.data,
+                    true
+                );
+
+            }
+
+            return;
+        }
+
+
+        /*
+         * Historical route
+         */
+
+        if (message.type === 'history') {
+
+            showHistory(message.data);
+
+            return;
+        }
+
+    };
+
+
+    /*
+     * SHOW HISTORY
+     */
+
+    document.getElementById('showHistory')
+        .addEventListener('click', () => {
+
+            const date =
+                document.getElementById('date').value;
+
+            if (!date) return;
+
+            liveMode = false;
+
+            document.getElementById('status').textContent =
+                '● HISTORY';
+
+            document.getElementById('message').textContent =
+                'Loading...';
+
+            socket.send(JSON.stringify({
+                type: 'history',
+                date: date
+            }));
+
+        });
+
+
+    /*
+     * RETURN TO LIVE
+     */
+
+    document.getElementById('liveButton')
+        .addEventListener('click', () => {
+
+            liveMode = true;
+
+            if (routeLine) {
+
+                map.removeLayer(routeLine);
+                routeLine = null;
+
+            }
+
+            document.getElementById('status').textContent =
+                '● LIVE';
+
+            document.getElementById('message').textContent =
+                '';
+
+            /*
+             * The next GPS packet will move the
+             * marker back to the current position.
+             */
+
+        });
+
+</script>
+
+</body>
+</html>
